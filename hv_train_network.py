@@ -1612,6 +1612,12 @@ class NetworkTrainer:
                     else:
                         freqs_cos, freqs_sin = pos_embed_cache[pos_emb_shape]
 
+                    # if i2v_mode == "start_frame":
+                    # dont noise the target frame
+                    noisy_model_input[:, :, [0], :, :] = latents[:, :, [0], :, :].to(noisy_model_input.dtype)
+                    # elif i2v_mode == "end_frame":
+                    # noisy_model_input[:, :, [-1], :, :] = latents[:, :, [-1], :, :].to(noisy_model_input.dtype)
+                    
                     # call DiT
                     latents = latents.to(device=accelerator.device, dtype=network_dtype)
                     noisy_model_input = noisy_model_input.to(device=accelerator.device, dtype=network_dtype)
@@ -1635,8 +1641,14 @@ class NetworkTrainer:
                     # flow matching loss
                     target = noise - latents
 
-                    loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
-
+                    # if i2v_mode == "start_frame":
+                    # dont loss the target frame
+                    loss = torch.nn.functional.mse_loss(model_pred[:, :, 1:, :, :].to(network_dtype), target[:, :, 1:, :, :], reduction="none")
+                    # elif i2v_mode == "end_frame":
+                    # loss = torch.nn.functional.mse_loss(model_pred[:, :, :-1, :, :].to(network_dtype), target[:, :, :-1, :, :], reduction="none")
+                    # else:
+                    # loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+    
                     if weighting is not None:
                         loss = loss * weighting
                     # loss = loss.mean([1, 2, 3])
