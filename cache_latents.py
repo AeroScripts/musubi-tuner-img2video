@@ -136,8 +136,13 @@ def encode_and_save_batch(vae: AutoencoderKLCausal3D, batch: list[ItemInfo]):
 
     # print(f"encode batch: {contents.shape}")
     with torch.no_grad():
-        latent = vae.encode(contents).latent_dist.sample()
-        # latent = latent * vae.config.scaling_factor
+        # Ensure the first "frame" latent doesn't have motion
+        first_latent = vae.encode(contents[:, :, 3:4, :, :, ]).latent_dist.sample()
+        latent = vae.encode(contents[:, :, 4:, :, :, ]).latent_dist.sample()
+        latent = torch.cat([first_latent, latent], dim=2)
+        latent = latent * vae.config.scaling_factor
+
+
 
     # # debug: decode and save
     # with torch.no_grad():
