@@ -116,6 +116,88 @@ def save_videos_grid(videos: torch.Tensor, path: str, rescale=False, n_rows=1, f
     container.close()
 
 
+from tqdm.auto import trange, tqdm
+import os
+
+def append_dims(x, target_dims):
+    """Appends dimensions to the end of a tensor until it has target_dims dimensions."""
+    dims_to_append = target_dims - x.ndim
+    if dims_to_append < 0:
+        raise ValueError(f'input has {x.ndim} dims but target_dims is {target_dims}, which is less')
+    expanded = x[(...,) + (None,) * dims_to_append]
+    # MPS will get inf values if it tries to index into the new axes, but detaching fixes this.
+    # https://github.com/pytorch/pytorch/issues/84364
+    return expanded.detach().clone() if expanded.device.type == 'mps' else expanded
+
+def to_d(x, sigma, denoised):
+    """Converts a denoiser output to a Karras ODE derivative."""
+    return (x - denoised) / append_dims(sigma, x.ndim).to(x.device)
+
+def default_noise_sampler(x):
+    return lambda sigma, sigma_next: torch.randn_like(x)
+
+# based on some code from k-diffusion
+def sample_image2video(model, x, sigmas, extras, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+    video2video_skip_frames = 0
+
+    target_image = None
+    if target_image is None and os.path.exists("target_latent.pt"):
+        target_image = torch.load("target_latent.pt")
+
+    prompt_embeds, prompt_mask, prompt_embeds_2, freqs_cos, freqs_sin, guidance_expand, return_dict, accelerator, timesteps = extras#t.repeat(latents.shape[0]).to(device=device, dtype=dit_dtype)
+    extra_args = {} if extra_args is None else extra_args
+    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()
+    t_fn = lambda sigma: sigma.log().neg()
+
+    extra_args = {
+        "text_states":prompt_embeds,  # [1, 256, 4096]
+        "text_mask":prompt_mask,  # [1, 256]
+        "text_states_2":prompt_embeds_2,  # [1, 768]
+        "freqs_cos":freqs_cos,  # [seqlen, head_dim]
+        "freqs_sin":freqs_sin,  # [seqlen, head_dim]
+        "guidance":guidance_expand,
+        "return_dict":return_dict,
+    }
+
+    x_start = x.clone()
+    last_t = None
+    
+    for i, t in enumerate(timesteps):
+        if video2video_skip_frames != 0 and i < video2video_skip_frames:
+            continue
+        # Noise addition
+        ex_noise = 0
+        x_noised = x
+        if sigmas[i + 1] > 0 and i > 0:
+            noise_mul = s_noise * 0.1 # up to 0.25 can work ok
+
+            x_pred = x - (x_start*sigmas[i])
+
+            if video2video_skip_frames != 0 and i == video2video_skip_frames:
+                x_pred = target_image*(1-sigmas[i])
+
+            noise = noise_sampler(sigmas[i], sigmas[i + 1])
+
+            x_noised = (x_pred) + (((x_start * (1-noise_mul)) + (noise * noise_mul)) * sigmas[i])
+            if video2video_skip_frames != 0 and i == video2video_skip_frames:
+                x = x_noised
+
+        with torch.no_grad(), accelerator.autocast():
+            last_t = (t).repeat(x.shape[0]).to(device=x.device, dtype=x.dtype)
+            if target_image is not None:
+                x_noised[:, :, [0,], :, :] = target_image[:, :, [0,], :, :].to(x_noised.dtype).to(x_noised.device)
+
+            denoised = model(x_noised, last_t, **extra_args)["x"]
+
+        dt = sigmas[i + 1] - sigmas[i]
+        x = x + denoised.to(torch.float32) * dt
+    
+    if target_image is not None:
+        x[:, :, [0,], :, :] = target_image[:, :, [0,], :, :].to(x.dtype).to(x.device)
+    return x
+
 def save_images_grid(
     videos: torch.Tensor, parent_dir: str, image_name: str, rescale: bool = False, n_rows: int = 1, create_subdir=True
 ):
@@ -683,32 +765,8 @@ def main():
         freqs_sin = freqs_sin.to(device=device, dtype=dit_dtype)
 
         num_warmup_steps = len(timesteps) - num_inference_steps * scheduler.order  # this should be 0 in v2v inference
-        # with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]) as p:
-        with tqdm(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
-                latents = scheduler.scale_model_input(latents, t)
 
-                # predict the noise residual
-                with torch.no_grad(), accelerator.autocast():
-                    noise_pred = transformer(  # For an input image (129, 192, 336) (1, 256, 256)
-                        latents,  # [1, 16, 33, 24, 42]
-                        t.repeat(latents.shape[0]).to(device=device, dtype=dit_dtype),  # [1]
-                        text_states=prompt_embeds,  # [1, 256, 4096]
-                        text_mask=prompt_mask,  # [1, 256]
-                        text_states_2=prompt_embeds_2,  # [1, 768]
-                        freqs_cos=freqs_cos,  # [seqlen, head_dim]
-                        freqs_sin=freqs_sin,  # [seqlen, head_dim]
-                        guidance=guidance_expand,
-                        return_dict=True,
-                    )["x"]
-
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-
-                # update progress bar
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
-                    if progress_bar is not None:
-                        progress_bar.update()
+        latents = sample_image2video(transformer, latents, scheduler.sigmas, (prompt_embeds, prompt_mask, prompt_embeds_2, freqs_cos, freqs_sin, guidance_expand, True, accelerator, timesteps))
 
         # print(p.key_averages().table(sort_by="self_cpu_time_total", row_limit=-1))
         # print(p.key_averages().table(sort_by="self_cuda_time_total", row_limit=-1))
