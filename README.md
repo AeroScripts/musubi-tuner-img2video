@@ -1,5 +1,22 @@
 # Musubi Tuner
 
+image2video / video infilling fork by LeapFusion (https://leapfusion.ai/)
+
+## Brief summary of training process:
+- Grab general video dataset and preprocess it into individual scene cuts using ffmpeg. [this](https://data.csail.mit.edu/tofu/dataset/original_video_list.txt) is a good starting point.
+- Process the data using the modified script. This ensures the first "frame" of tokens in the video has no motion. 
+- Run the modified trainer script. We found that training on unlabelled data produced the best results. Train for only 1 epoch, it quickly overfits when it starts the 2nd epoch.
+
+- Sample with the first frame frozen as the input image. It's also possible to train the model on the final frame or some frames in the middle of the video, as long as sampling is done similarly.
+- Recommend trying video2video in combination with this, the results are pretty cool.
+
+## Things to try in the future:
+- Frame infilling: It may be possible to create high framerate slow motion videos by training a model that infills frames?
+- Try conditioning on the target image by combining in the attentions of the DiT, instead of a frame in the generation. This should produce better results
+
+
+## Original readme:
+
 [English](./README.md) | [日本語](./README.ja.md)
 
 ## Table of Contents
