@@ -2,6 +2,12 @@
 
 image2video / video infilling fork by LeapFusion (https://leapfusion.ai/)
 
+## Some notes about the v2 checkpoint training process:
+- A subset of 8000 high-aesthetic high-motion quality videos were taken from OpenVid-1M
+- Tooling for pulling OpenVid subsets will be posted soon, but the idea is to index all the .zip archives, dumping only the file headers. That makes it trivial to download individual videos from the huggingface release using http partial requests.
+- Trained on 75% unlabelled 25% labelled data. I think more labelled data would be better
+- Trained for 2 epochs at 8 bs, 544x960x85
+
 ## Brief summary of training process:
 - Grab general video dataset and preprocess it into individual scene cuts using ffmpeg. [this](https://data.csail.mit.edu/tofu/dataset/original_video_list.txt) is a good starting point.
 - Process the data using the modified script. This ensures the first "frame" of tokens in the video has no motion. 
